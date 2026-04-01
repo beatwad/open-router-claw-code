@@ -1,4 +1,4 @@
-# Rewriting Project Claw Code
+# OpenRouter Claw Code
 
 <p align="center">
   <img src="assets/clawd-hero.jpeg" alt="Claw" width="300" />
@@ -12,16 +12,12 @@
   <a href="https://github.com/sponsors/instructkr"><img src="https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink?logo=github&style=for-the-badge" alt="Sponsor on GitHub" /></a>
 </p>
 
-> [!IMPORTANT]
-> **Rust port is now in progress** on the [`dev/rust`](https://github.com/instructkr/claw-code/tree/dev/rust) branch and is expected to be merged into main today. The Rust implementation aims to deliver a faster, memory-safe harness runtime. Stay tuned — this will be the definitive version of the project.
-
-> If you find this work useful, consider [sponsoring @instructkr on GitHub](https://github.com/sponsors/instructkr) to support continued open-source harness engineering research.
-
----
 
 ## Overview
+This is fork of that project https://github.com/instructkr/claw-code/
 
-Project Claw Code is a clean-room Python rewrite that captures the architectural patterns of agent harnesses. **We have successfully updated this project to work with any model from OpenRouter, rather than being restricted to Anthropic models.** 
+
+Project OpenRouter Claw Code is a clean-room Python rewrite that captures the architectural patterns of agent harnesses. **We have successfully updated this project to work with any model from OpenRouter, rather than being restricted to Anthropic models.** 
 
 ## Porting Status
 
@@ -92,18 +88,3 @@ Inspect mirrored command/tool inventories:
 python3 -m src.main commands --limit 10
 python3 -m src.main tools --limit 10
 ```
-
-## Community
-
-<p align="center">
-  <a href="https://instruct.kr/"><img src="assets/instructkr.png" alt="instructkr" width="400" /></a>
-</p>
-
-Join the [**instructkr Discord**](https://instruct.kr/) — the best Korean language model community. Come chat about LLMs, harness engineering, agent workflows, and everything in between.
-
-[![Discord](https://img.shields.io/badge/Join%20Discord-instruct.kr-5865F2?logo=discord&style=for-the-badge)](https://instruct.kr/)
-
-## Ownership / Affiliation Disclaimer
-
-- This repository does **not** claim ownership of the original Claude Code source material.
-- This repository is **not affiliated with, endorsed by, or maintained by Anthropic**.

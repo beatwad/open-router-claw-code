@@ -3306,7 +3306,7 @@ mod tests {
             parse_args(&args).expect("args should parse"),
             CliAction::Prompt {
                 prompt: "explain this".to_string(),
-                model: "claude-opus-4-6".to_string(),
+                model: "anthropic/claude-opus-4".to_string(),
                 output_format: CliOutputFormat::Text,
                 allowed_tools: None,
                 permission_mode: PermissionMode::DangerFullAccess,
@@ -3316,9 +3316,9 @@ mod tests {
 
     #[test]
     fn resolves_known_model_aliases() {
-        assert_eq!(resolve_model_alias("opus"), "claude-opus-4-6");
-        assert_eq!(resolve_model_alias("sonnet"), "claude-sonnet-4-6");
-        assert_eq!(resolve_model_alias("haiku"), "claude-haiku-4-5-20251213");
+        assert_eq!(resolve_model_alias("opus"), "anthropic/claude-opus-4");
+        assert_eq!(resolve_model_alias("sonnet"), "anthropic/claude-sonnet-4");
+        assert_eq!(resolve_model_alias("haiku"), "anthropic/claude-haiku-4");
         assert_eq!(resolve_model_alias("claude-opus"), "claude-opus");
     }
 

@@ -1171,6 +1171,7 @@ mod tests {
 
     #[test]
     fn spawns_stdio_process_and_round_trips_io() {
+        let _guard = crate::test_env_lock();
         let runtime = Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1213,6 +1214,7 @@ mod tests {
 
     #[test]
     fn round_trips_initialize_request_and_response_over_stdio_frames() {
+        let _guard = crate::test_env_lock();
         let runtime = Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1260,6 +1262,7 @@ mod tests {
 
     #[test]
     fn write_jsonrpc_request_emits_content_length_frame() {
+        let _guard = crate::test_env_lock();
         let runtime = Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1294,6 +1297,7 @@ mod tests {
 
     #[test]
     fn direct_spawn_uses_transport_env() {
+        let _guard = crate::test_env_lock();
         let runtime = Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1317,6 +1321,7 @@ mod tests {
 
     #[test]
     fn lists_tools_calls_tool_and_reads_resources_over_jsonrpc() {
+        let _guard = crate::test_env_lock();
         let runtime = Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1417,6 +1422,7 @@ mod tests {
 
     #[test]
     fn surfaces_jsonrpc_errors_from_tool_calls() {
+        let _guard = crate::test_env_lock();
         let runtime = Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1454,6 +1460,7 @@ mod tests {
 
     #[test]
     fn manager_discovers_tools_from_stdio_config() {
+        let _guard = crate::test_env_lock();
         let runtime = Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1484,6 +1491,7 @@ mod tests {
 
     #[test]
     fn manager_routes_tool_calls_to_correct_server() {
+        let _guard = crate::test_env_lock();
         let runtime = Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1592,6 +1600,7 @@ mod tests {
 
     #[test]
     fn manager_shutdown_terminates_spawned_children_and_is_idempotent() {
+        let _guard = crate::test_env_lock();
         let runtime = Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1616,6 +1625,7 @@ mod tests {
 
     #[test]
     fn manager_reuses_spawned_server_between_discovery_and_call() {
+        let _guard = crate::test_env_lock();
         let runtime = Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1662,6 +1672,7 @@ mod tests {
 
     #[test]
     fn manager_reports_unknown_qualified_tool_name() {
+        let _guard = crate::test_env_lock();
         let runtime = Builder::new_current_thread()
             .enable_all()
             .build()

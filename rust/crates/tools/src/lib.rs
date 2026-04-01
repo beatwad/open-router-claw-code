@@ -3222,7 +3222,21 @@ mod tests {
     }
 
     #[test]
+        #[test]
     fn skill_loads_local_skill_prompt() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let codex_home = temp_path("codex-home");
+        let skill_dir = codex_home.join("skills").join("help");
+        std::fs::create_dir_all(&skill_dir).expect("create skill dir");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "description: Guide on using oh-my-codex plugin\n\nSome content.",
+        )
+        .expect("write skill");
+        std::env::set_var("CODEX_HOME", &codex_home);
+
         let result = execute_tool(
             "Skill",
             &json!({
@@ -3257,6 +3271,9 @@ mod tests {
             .as_str()
             .expect("path")
             .ends_with("/help/SKILL.md"));
+
+        std::env::remove_var("CODEX_HOME");
+        let _ = std::fs::remove_dir_all(codex_home);
     }
 
     #[test]
