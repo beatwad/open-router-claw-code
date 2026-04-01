@@ -12,27 +12,69 @@
   <a href="https://github.com/sponsors/instructkr"><img src="https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink?logo=github&style=for-the-badge" alt="Sponsor on GitHub" /></a>
 </p>
 
-
 ## Overview
-This is fork of that project https://github.com/instructkr/claw-code/
+This is a fork of the project [https://github.com/instructkr/claw-code/](https://github.com/instructkr/claw-code/).
 
+Project OpenRouter Claw Code aims to create a highly capable CLI agent harness. **We have successfully updated this project to work with any model from OpenRouter, rather than being restricted to Anthropic models.** 
 
-Project OpenRouter Claw Code is a clean-room Python rewrite that captures the architectural patterns of agent harnesses. **We have successfully updated this project to work with any model from OpenRouter, rather than being restricted to Anthropic models.** 
+Currently, the repository contains two parallel tracks:
+1. **The Functional Agent (Rust):** A fully working, high-performance CLI application that executes tools, maintains context, and talks to OpenRouter.
+2. **The Porting Workspace (Python):** A clean-room Python rewrite currently in progress that captures the architectural patterns of the agent harness.
 
-## Porting Status
+---
 
-The main source tree is now Python-first.
+## 🚀 Getting Started: Using the Functional Agent (Rust)
 
-- `src/` contains the active Python porting workspace
-- `tests/` verifies the current Python workspace
+To actually run the AI agent, interact with your codebase, and use OpenRouter models, you will use the Rust implementation. You will need [Rust installed](https://rustup.rs/) on your system.
 
-The current Python workspace is not yet a complete one-to-one replacement for the original system, but the primary implementation surface is now Python.
+### 1. Set your OpenRouter API Key
+The agent authenticates using your OpenRouter API key. Export it in your terminal:
 
-## Repository Layout
+```bash
+export OPENROUTER_API_KEY="sk-or-v1-..."
+
+# Optional: If you are using a custom proxy endpoint
+# export OPENROUTER_BASE_URL="https://your-custom-proxy.com/api"
+```
+
+### 2. Start the Interactive REPL
+Navigate to the `rust` directory and run the application:
+
+```bash
+cd rust/
+cargo run --release
+```
+*This will drop you into the interactive `claw` REPL where you can type prompts or use slash commands (like `/help` or `/status`).*
+
+### 3. Using Specific OpenRouter Models
+By default, the agent tries to use an Opus alias, but you can pass any OpenRouter model string or use built-in aliases (like `gpt4o`, `deepseek`, `sonnet`, `haiku`):
+
+```bash
+# Using a built-in alias:
+cargo run --release -- --model google/gemini-3-flash-preview
+
+# Using an exact OpenRouter model ID:
+cargo run --release -- --model meta-llama/llama-3-70b-instruct
+```
+
+### 4. One-Shot Prompt Mode
+To run a single command and exit without entering the REPL:
+```bash
+cargo run --release -- prompt "Analyze the files in this directory and summarize them"
+```
+
+---
+
+## 🐍 Development: Python Porting Workspace
+
+The main source tree (`src/`) contains the active Python porting workspace. The current Python workspace is not yet a complete one-to-one replacement for the Rust system, but it is the primary implementation surface for the rewrite.
+
+### Repository Layout
 
 ```text
 .
-├── src/                                # Python porting workspace
+├── rust/                               # Functional, high-performance Rust CLI agent
+├── src/                                # Python porting workspace (WIP)
 │   ├── __init__.py
 │   ├── commands.py
 │   ├── main.py
@@ -45,7 +87,7 @@ The current Python workspace is not yet a complete one-to-one replacement for th
 └── README.md
 ```
 
-## Python Workspace Overview
+### Python Workspace Overview
 
 The new Python `src/` tree currently provides:
 
@@ -56,35 +98,25 @@ The new Python `src/` tree currently provides:
 - **`query_engine.py`** — renders a Python porting summary from the active workspace
 - **`main.py`** — a CLI entrypoint for manifest and summary output
 
-## Quickstart
+### Python Quickstart
 
-Render the Python porting summary:
+If you want to explore the Python rewrite codebase, you can run the following commands from the **root of the repository** (requires Python 3):
 
 ```bash
+# Render the Python porting summary:
 python3 -m src.main summary
-```
 
-Print the current Python workspace manifest:
-
-```bash
+# Print the current Python workspace manifest:
 python3 -m src.main manifest
-```
 
-List the current Python modules:
-
-```bash
+# List the current Python modules:
 python3 -m src.main subsystems --limit 16
-```
 
-Run verification:
-
-```bash
-python3 -m unittest discover -s tests -v
-```
-
-Inspect mirrored command/tool inventories:
-
-```bash
+# Inspect mirrored command/tool inventories:
 python3 -m src.main commands --limit 10
 python3 -m src.main tools --limit 10
+
+# Run verification tests:
+python3 -m unittest discover -s tests -v
+```
 ```
