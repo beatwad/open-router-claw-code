@@ -54,7 +54,7 @@ impl Display for ApiError {
             Self::MissingApiKey => {
                 write!(
                     f,
-                    "ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY is not set; export one before calling the Anthropic API"
+                    "OPENROUTER_API_KEY is not set; export it before calling the API (ANTHROPIC_API_KEY also accepted as fallback)"
                 )
             }
             Self::ExpiredOAuthToken => {
@@ -65,10 +65,7 @@ impl Display for ApiError {
             }
             Self::Auth(message) => write!(f, "auth error: {message}"),
             Self::InvalidApiKeyEnv(error) => {
-                write!(
-                    f,
-                    "failed to read ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY: {error}"
-                )
+                write!(f, "failed to read API key from environment: {error}")
             }
             Self::Http(error) => write!(f, "http error: {error}"),
             Self::Io(error) => write!(f, "io error: {error}"),
@@ -81,19 +78,16 @@ impl Display for ApiError {
                 ..
             } => match (error_type, message) {
                 (Some(error_type), Some(message)) => {
-                    write!(
-                        f,
-                        "anthropic api returned {status} ({error_type}): {message}"
-                    )
+                    write!(f, "api returned {status} ({error_type}): {message}")
                 }
-                _ => write!(f, "anthropic api returned {status}: {body}"),
+                _ => write!(f, "api returned {status}: {body}"),
             },
             Self::RetriesExhausted {
                 attempts,
                 last_error,
             } => write!(
                 f,
-                "anthropic api failed after {attempts} attempts: {last_error}"
+                "api failed after {attempts} attempts: {last_error}"
             ),
             Self::InvalidSseFrame(message) => write!(f, "invalid sse frame: {message}"),
             Self::BackoffOverflow {

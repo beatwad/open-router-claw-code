@@ -8,13 +8,12 @@ use runtime::{
 use serde::Deserialize;
 
 use crate::error::ApiError;
+use crate::openai_compat::{from_chat_response, to_chat_request, ChatCompletionResponse};
 use crate::sse::SseParser;
 use crate::types::{MessageRequest, MessageResponse, StreamEvent};
 
-const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
-const ANTHROPIC_VERSION: &str = "2023-06-01";
-const REQUEST_ID_HEADER: &str = "request-id";
-const ALT_REQUEST_ID_HEADER: &str = "x-request-id";
+const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api";
+const REQUEST_ID_HEADER: &str = "x-request-id";
 const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_millis(200);
 const DEFAULT_MAX_BACKOFF: Duration = Duration::from_secs(2);
 const DEFAULT_MAX_RETRIES: u32 = 2;
@@ -32,6 +31,10 @@ pub enum AuthSource {
 
 impl AuthSource {
     pub fn from_env() -> Result<Self, ApiError> {
+        if let Some(key) = read_env_non_empty("OPENROUTER_API_KEY")? {
+            return Ok(Self::BearerToken(key));
+        }
+        // Fallback to legacy Anthropic env vars for backward compatibility
         let api_key = read_env_non_empty("ANTHROPIC_API_KEY")?;
         let auth_token = read_env_non_empty("ANTHROPIC_AUTH_TOKEN")?;
         match (api_key, auth_token) {
@@ -204,10 +207,11 @@ impl AnthropicClient {
         };
         let response = self.send_with_retry(&request).await?;
         let request_id = request_id_from_headers(response.headers());
-        let mut response = response
-            .json::<MessageResponse>()
+        let chat_response = response
+            .json::<ChatCompletionResponse>()
             .await
             .map_err(ApiError::from)?;
+        let mut response = from_chat_response(chat_response);
         if response.request_id.is_none() {
             response.request_id = request_id;
         }
@@ -310,15 +314,18 @@ impl AnthropicClient {
         &self,
         request: &MessageRequest,
     ) -> Result<reqwest::Response, ApiError> {
-        let request_url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
+        let request_url = format!(
+            "{}/v1/chat/completions",
+            self.base_url.trim_end_matches('/')
+        );
+        let chat_request = to_chat_request(request);
         let request_builder = self
             .http
             .post(&request_url)
-            .header("anthropic-version", ANTHROPIC_VERSION)
             .header("content-type", "application/json");
         let mut request_builder = self.auth.apply(request_builder);
 
-        request_builder = request_builder.json(request);
+        request_builder = request_builder.json(&chat_request);
         request_builder.send().await.map_err(ApiError::from)
     }
 
@@ -338,6 +345,9 @@ impl AnthropicClient {
 
 impl AuthSource {
     pub fn from_env_or_saved() -> Result<Self, ApiError> {
+        if let Some(key) = read_env_non_empty("OPENROUTER_API_KEY")? {
+            return Ok(Self::BearerToken(key));
+        }
         if let Some(api_key) = read_env_non_empty("ANTHROPIC_API_KEY")? {
             return match read_env_non_empty("ANTHROPIC_AUTH_TOKEN")? {
                 Some(bearer_token) => Ok(Self::ApiKeyAndBearer {
@@ -386,6 +396,9 @@ pub fn resolve_startup_auth_source<F>(load_oauth_config: F) -> Result<AuthSource
 where
     F: FnOnce() -> Result<Option<OAuthConfig>, ApiError>,
 {
+    if let Some(key) = read_env_non_empty("OPENROUTER_API_KEY")? {
+        return Ok(AuthSource::BearerToken(key));
+    }
     if let Some(api_key) = read_env_non_empty("ANTHROPIC_API_KEY")? {
         return match read_env_non_empty("ANTHROPIC_AUTH_TOKEN")? {
             Some(bearer_token) => Ok(AuthSource::ApiKeyAndBearer {
@@ -509,13 +522,14 @@ fn read_auth_token() -> Option<String> {
 
 #[must_use]
 pub fn read_base_url() -> String {
-    std::env::var("ANTHROPIC_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string())
+    std::env::var("OPENROUTER_BASE_URL")
+        .or_else(|_| std::env::var("ANTHROPIC_BASE_URL"))
+        .unwrap_or_else(|_| DEFAULT_BASE_URL.to_string())
 }
 
 fn request_id_from_headers(headers: &reqwest::header::HeaderMap) -> Option<String> {
     headers
         .get(REQUEST_ID_HEADER)
-        .or_else(|| headers.get(ALT_REQUEST_ID_HEADER))
         .and_then(|value| value.to_str().ok())
         .map(ToOwned::to_owned)
 }
@@ -569,17 +583,17 @@ async fn expect_success(response: reqwest::Response) -> Result<reqwest::Response
     }
 
     let body = response.text().await.unwrap_or_else(|_| String::new());
-    let parsed_error = serde_json::from_str::<AnthropicErrorEnvelope>(&body).ok();
+    let parsed_error = serde_json::from_str::<ApiErrorEnvelope>(&body).ok();
     let retryable = is_retryable_status(status);
 
     Err(ApiError::Api {
         status,
         error_type: parsed_error
             .as_ref()
-            .map(|error| error.error.error_type.clone()),
+            .and_then(|e| e.error_type()),
         message: parsed_error
             .as_ref()
-            .map(|error| error.error.message.clone()),
+            .and_then(|e| e.error_message()),
         body,
         retryable,
     })
@@ -589,21 +603,28 @@ const fn is_retryable_status(status: reqwest::StatusCode) -> bool {
     matches!(status.as_u16(), 408 | 409 | 429 | 500 | 502 | 503 | 504)
 }
 
+/// Handles both OpenAI-style `{"error": {"message": "...", "type": "..."}}` and
+/// simple `{"error": "string"}` envelopes.
 #[derive(Debug, Deserialize)]
-struct AnthropicErrorEnvelope {
-    error: AnthropicErrorBody,
+struct ApiErrorEnvelope {
+    error: serde_json::Value,
 }
 
-#[derive(Debug, Deserialize)]
-struct AnthropicErrorBody {
-    #[serde(rename = "type")]
-    error_type: String,
-    message: String,
+impl ApiErrorEnvelope {
+    fn error_type(&self) -> Option<String> {
+        self.error.get("type").and_then(|v| v.as_str()).map(ToOwned::to_owned)
+            .or_else(|| self.error.get("code").and_then(|v| v.as_str()).map(ToOwned::to_owned))
+    }
+
+    fn error_message(&self) -> Option<String> {
+        self.error.get("message").and_then(|v| v.as_str()).map(ToOwned::to_owned)
+            .or_else(|| self.error.as_str().map(ToOwned::to_owned))
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ALT_REQUEST_ID_HEADER, REQUEST_ID_HEADER};
+    use super::REQUEST_ID_HEADER;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::{Mutex, OnceLock};
@@ -952,22 +973,12 @@ mod tests {
     }
 
     #[test]
-    fn request_id_uses_primary_or_fallback_header() {
+    fn request_id_from_header() {
         let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(REQUEST_ID_HEADER, "req_primary".parse().expect("header"));
+        headers.insert(REQUEST_ID_HEADER, "req_123".parse().expect("header"));
         assert_eq!(
             super::request_id_from_headers(&headers).as_deref(),
-            Some("req_primary")
-        );
-
-        headers.clear();
-        headers.insert(
-            ALT_REQUEST_ID_HEADER,
-            "req_fallback".parse().expect("header"),
-        );
-        assert_eq!(
-            super::request_id_from_headers(&headers).as_deref(),
-            Some("req_fallback")
+            Some("req_123")
         );
     }
 

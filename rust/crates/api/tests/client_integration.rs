@@ -17,15 +17,14 @@ async fn send_message_posts_json_and_parses_response() {
     let state = Arc::new(Mutex::new(Vec::<CapturedRequest>::new()));
     let body = concat!(
         "{",
-        "\"id\":\"msg_test\",",
-        "\"type\":\"message\",",
-        "\"role\":\"assistant\",",
-        "\"content\":[{\"type\":\"text\",\"text\":\"Hello from Claude\"}],",
-        "\"model\":\"claude-3-7-sonnet-latest\",",
-        "\"stop_reason\":\"end_turn\",",
-        "\"stop_sequence\":null,",
-        "\"usage\":{\"input_tokens\":12,\"output_tokens\":4},",
-        "\"request_id\":\"req_body_123\"",
+        "\"id\":\"chatcmpl-test\",",
+        "\"object\":\"chat.completion\",",
+        "\"model\":\"anthropic/claude-sonnet-4\",",
+        "\"choices\":[{",
+        "\"message\":{\"role\":\"assistant\",\"content\":\"Hello from Claude\"},",
+        "\"finish_reason\":\"stop\"",
+        "}],",
+        "\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":4}",
         "}"
     );
     let server = spawn_server(
@@ -42,9 +41,9 @@ async fn send_message_posts_json_and_parses_response() {
         .await
         .expect("request should succeed");
 
-    assert_eq!(response.id, "msg_test");
+    assert_eq!(response.id, "chatcmpl-test");
     assert_eq!(response.total_tokens(), 16);
-    assert_eq!(response.request_id.as_deref(), Some("req_body_123"));
+    assert_eq!(response.stop_reason.as_deref(), Some("end_turn"));
     assert_eq!(
         response.content,
         vec![OutputContentBlock::Text {
@@ -55,11 +54,8 @@ async fn send_message_posts_json_and_parses_response() {
     let captured = state.lock().await;
     let request = captured.first().expect("server should capture request");
     assert_eq!(request.method, "POST");
-    assert_eq!(request.path, "/v1/messages");
-    assert_eq!(
-        request.headers.get("x-api-key").map(String::as_str),
-        Some("test-key")
-    );
+    assert_eq!(request.path, "/v1/chat/completions");
+    // Auth should use Bearer for OpenRouter
     assert_eq!(
         request.headers.get("authorization").map(String::as_str),
         Some("Bearer proxy-token")
@@ -68,29 +64,25 @@ async fn send_message_posts_json_and_parses_response() {
         serde_json::from_str(&request.body).expect("request body should be json");
     assert_eq!(
         body.get("model").and_then(serde_json::Value::as_str),
-        Some("claude-3-7-sonnet-latest")
+        Some("test-model")
     );
-    assert!(body.get("stream").is_none());
-    assert_eq!(body["tools"][0]["name"], json!("get_weather"));
-    assert_eq!(body["tool_choice"]["type"], json!("auto"));
+    // OpenAI format uses stream: false (or omits it)
+    assert!(
+        body.get("stream").is_none()
+            || body.get("stream") == Some(&serde_json::Value::Bool(false))
+    );
+    assert_eq!(body["tools"][0]["function"]["name"], json!("get_weather"));
+    assert_eq!(body["tool_choice"], json!("auto"));
 }
 
 #[tokio::test]
 async fn stream_message_parses_sse_events_with_tool_use() {
     let state = Arc::new(Mutex::new(Vec::<CapturedRequest>::new()));
     let sse = concat!(
-        "event: message_start\n",
-        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_stream\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-3-7-sonnet-latest\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":8,\"output_tokens\":0}}}\n\n",
-        "event: content_block_start\n",
-        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_123\",\"name\":\"get_weather\",\"input\":{}}}\n\n",
-        "event: content_block_delta\n",
-        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}\n\n",
-        "event: content_block_stop\n",
-        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
-        "event: message_delta\n",
-        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":8,\"output_tokens\":1}}\n\n",
-        "event: message_stop\n",
-        "data: {\"type\":\"message_stop\"}\n\n",
+        "data: {\"id\":\"chatcmpl-stream\",\"model\":\"test-model\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"chatcmpl-stream\",\"model\":\"test-model\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_123\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"chatcmpl-stream\",\"model\":\"test-model\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"chatcmpl-stream\",\"model\":\"test-model\",\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":1}}\n\n",
         "data: [DONE]\n\n"
     );
     let server = spawn_server(
@@ -99,7 +91,7 @@ async fn stream_message_parses_sse_events_with_tool_use() {
             "200 OK",
             "text/event-stream",
             sse,
-            &[("request-id", "req_stream_456")],
+            &[("x-request-id", "req_stream_456")],
         )],
     )
     .await;
@@ -123,39 +115,49 @@ async fn stream_message_parses_sse_events_with_tool_use() {
         events.push(event);
     }
 
-    assert_eq!(events.len(), 6);
+    // Expect: MessageStart, ContentBlockStart(Text), ContentBlockStop(text),
+    //         ContentBlockStart(ToolUse), ContentBlockDelta(InputJsonDelta),
+    //         ContentBlockStop, MessageDelta, MessageStop
     assert!(matches!(events[0], StreamEvent::MessageStart(_)));
-    assert!(matches!(
-        events[1],
+
+    // Find the tool use content block start
+    let tool_start = events.iter().find(|e| {
+        matches!(
+            e,
+            StreamEvent::ContentBlockStart(ContentBlockStartEvent {
+                content_block: OutputContentBlock::ToolUse { .. },
+                ..
+            })
+        )
+    });
+    assert!(tool_start.is_some(), "should have tool_use content block");
+
+    // Check tool name
+    match tool_start.unwrap() {
         StreamEvent::ContentBlockStart(ContentBlockStartEvent {
-            content_block: OutputContentBlock::ToolUse { .. },
+            content_block: OutputContentBlock::ToolUse { name, .. },
             ..
-        })
-    ));
-    assert!(matches!(
-        events[2],
+        }) => {
+            assert_eq!(name, "get_weather");
+        }
+        other => panic!("expected tool_use block, got {other:?}"),
+    }
+
+    // Should have InputJsonDelta
+    assert!(events.iter().any(|e| matches!(
+        e,
         StreamEvent::ContentBlockDelta(ContentBlockDeltaEvent {
             delta: ContentBlockDelta::InputJsonDelta { .. },
             ..
         })
-    ));
-    assert!(matches!(events[3], StreamEvent::ContentBlockStop(_)));
-    assert!(matches!(
-        events[4],
-        StreamEvent::MessageDelta(MessageDeltaEvent { .. })
-    ));
-    assert!(matches!(events[5], StreamEvent::MessageStop(_)));
+    )));
 
-    match &events[1] {
-        StreamEvent::ContentBlockStart(ContentBlockStartEvent {
-            content_block: OutputContentBlock::ToolUse { name, input, .. },
-            ..
-        }) => {
-            assert_eq!(name, "get_weather");
-            assert_eq!(input, &json!({}));
-        }
-        other => panic!("expected tool_use block, got {other:?}"),
-    }
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, StreamEvent::MessageDelta(MessageDeltaEvent { .. }))));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, StreamEvent::MessageStop(_))));
 
     let captured = state.lock().await;
     let request = captured.first().expect("server should capture request");
@@ -171,12 +173,12 @@ async fn retries_retryable_failures_before_succeeding() {
             http_response(
                 "429 Too Many Requests",
                 "application/json",
-                "{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"slow down\"}}",
+                "{\"error\":{\"type\":\"rate_limit_error\",\"message\":\"slow down\"}}",
             ),
             http_response(
                 "200 OK",
                 "application/json",
-                "{\"id\":\"msg_retry\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Recovered\"}],\"model\":\"claude-3-7-sonnet-latest\",\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}",
+                "{\"id\":\"chatcmpl-retry\",\"model\":\"test\",\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"Recovered\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}",
             ),
         ],
     )
@@ -204,12 +206,12 @@ async fn surfaces_retry_exhaustion_for_persistent_retryable_errors() {
             http_response(
                 "503 Service Unavailable",
                 "application/json",
-                "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"busy\"}}",
+                "{\"error\":{\"type\":\"overloaded_error\",\"message\":\"busy\"}}",
             ),
             http_response(
                 "503 Service Unavailable",
                 "application/json",
-                "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"still busy\"}}",
+                "{\"error\":{\"type\":\"overloaded_error\",\"message\":\"still busy\"}}",
             ),
         ],
     )
@@ -244,13 +246,13 @@ async fn surfaces_retry_exhaustion_for_persistent_retryable_errors() {
 }
 
 #[tokio::test]
-#[ignore = "requires ANTHROPIC_API_KEY and network access"]
+#[ignore = "requires OPENROUTER_API_KEY and network access"]
 async fn live_stream_smoke_test() {
-    let client = AnthropicClient::from_env().expect("ANTHROPIC_API_KEY must be set");
+    let client = AnthropicClient::from_env().expect("OPENROUTER_API_KEY must be set");
     let mut stream = client
         .stream_message(&MessageRequest {
-            model: std::env::var("ANTHROPIC_MODEL")
-                .unwrap_or_else(|_| "claude-3-7-sonnet-latest".to_string()),
+            model: std::env::var("MODEL")
+                .unwrap_or_else(|_| "anthropic/claude-sonnet-4".to_string()),
             max_tokens: 32,
             messages: vec![InputMessage::user_text(
                 "Reply with exactly: hello from rust",
@@ -410,7 +412,7 @@ fn http_response_with_headers(
 
 fn sample_request(stream: bool) -> MessageRequest {
     MessageRequest {
-        model: "claude-3-7-sonnet-latest".to_string(),
+        model: "test-model".to_string(),
         max_tokens: 64,
         messages: vec![InputMessage {
             role: "user".to_string(),

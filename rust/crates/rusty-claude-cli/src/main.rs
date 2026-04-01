@@ -34,10 +34,12 @@ use runtime::{
 use serde_json::json;
 use tools::{execute_tool, mvp_tool_specs, ToolSpec};
 
-const DEFAULT_MODEL: &str = "claude-opus-4-6";
+const DEFAULT_MODEL: &str = "anthropic/claude-opus-4";
 fn max_tokens_for_model(model: &str) -> u32 {
     if model.contains("opus") {
         32_000
+    } else if model.contains("o1") || model.contains("o3") || model.contains("o4") {
+        100_000
     } else {
         64_000
     }
@@ -290,9 +292,12 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
 
 fn resolve_model_alias(model: &str) -> &str {
     match model {
-        "opus" => "claude-opus-4-6",
-        "sonnet" => "claude-sonnet-4-6",
-        "haiku" => "claude-haiku-4-5-20251213",
+        "opus" => "anthropic/claude-opus-4",
+        "sonnet" => "anthropic/claude-sonnet-4",
+        "haiku" => "anthropic/claude-haiku-4",
+        "gpt4o" | "gpt-4o" => "openai/gpt-4o",
+        "deepseek" => "deepseek/deepseek-chat-v3-0324",
+        "gemini" => "google/gemini-2.5-pro-preview",
         _ => model,
     }
 }

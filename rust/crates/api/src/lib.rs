@@ -1,5 +1,6 @@
 mod client;
 mod error;
+pub mod openai_compat;
 mod sse;
 mod types;
 
@@ -8,7 +9,7 @@ pub use client::{
     AnthropicClient, AuthSource, MessageStream, OAuthTokenSet,
 };
 pub use error::ApiError;
-pub use sse::{parse_frame, SseParser};
+pub use sse::SseParser;
 pub use types::{
     ContentBlockDelta, ContentBlockDeltaEvent, ContentBlockStartEvent, ContentBlockStopEvent,
     InputContentBlock, InputMessage, MessageDelta, MessageDeltaEvent, MessageRequest,

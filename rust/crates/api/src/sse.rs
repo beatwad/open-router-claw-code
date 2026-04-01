@@ -1,24 +1,35 @@
 use crate::error::ApiError;
+use crate::openai_compat::{ChatCompletionChunk, OpenAiStreamConverter};
 use crate::types::StreamEvent;
 
 #[derive(Debug, Default)]
 pub struct SseParser {
     buffer: Vec<u8>,
+    converter: Option<OpenAiStreamConverter>,
 }
 
 impl SseParser {
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            buffer: Vec::new(),
+            converter: None,
+        }
     }
 
+    /// Push raw bytes and return parsed StreamEvents (via OpenAI chunk conversion).
     pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<StreamEvent>, ApiError> {
         self.buffer.extend_from_slice(chunk);
         let mut events = Vec::new();
 
         while let Some(frame) = self.next_frame() {
-            if let Some(event) = parse_frame(&frame)? {
-                events.push(event);
+            if let Some(payload) = extract_data_payload(&frame) {
+                let converter = self
+                    .converter
+                    .get_or_insert_with(OpenAiStreamConverter::new);
+                let chunk: ChatCompletionChunk =
+                    serde_json::from_str(&payload).map_err(ApiError::from)?;
+                events.extend(converter.process_chunk(chunk));
             }
         }
 
@@ -31,9 +42,16 @@ impl SseParser {
         }
 
         let trailing = std::mem::take(&mut self.buffer);
-        match parse_frame(&String::from_utf8_lossy(&trailing))? {
-            Some(event) => Ok(vec![event]),
-            None => Ok(Vec::new()),
+        let frame = String::from_utf8_lossy(&trailing);
+        if let Some(payload) = extract_data_payload(&frame) {
+            let converter = self
+                .converter
+                .get_or_insert_with(OpenAiStreamConverter::new);
+            let chunk: ChatCompletionChunk =
+                serde_json::from_str(&payload).map_err(ApiError::from)?;
+            Ok(converter.process_chunk(chunk))
+        } else {
+            Ok(Vec::new())
         }
     }
 
@@ -60,21 +78,24 @@ impl SseParser {
     }
 }
 
-pub fn parse_frame(frame: &str) -> Result<Option<StreamEvent>, ApiError> {
+/// Extract the data payload from an SSE frame, returning None for pings, [DONE], and empty frames.
+fn extract_data_payload(frame: &str) -> Option<String> {
     let trimmed = frame.trim();
     if trimmed.is_empty() {
-        return Ok(None);
+        return None;
     }
 
     let mut data_lines = Vec::new();
-    let mut event_name: Option<&str> = None;
 
     for line in trimmed.lines() {
         if line.starts_with(':') {
             continue;
         }
         if let Some(name) = line.strip_prefix("event:") {
-            event_name = Some(name.trim());
+            let name = name.trim();
+            if name == "ping" {
+                return None;
+            }
             continue;
         }
         if let Some(data) = line.strip_prefix("data:") {
@@ -82,138 +103,79 @@ pub fn parse_frame(frame: &str) -> Result<Option<StreamEvent>, ApiError> {
         }
     }
 
-    if matches!(event_name, Some("ping")) {
-        return Ok(None);
-    }
-
     if data_lines.is_empty() {
-        return Ok(None);
+        return None;
     }
 
     let payload = data_lines.join("\n");
     if payload == "[DONE]" {
-        return Ok(None);
+        return None;
     }
 
-    serde_json::from_str::<StreamEvent>(&payload)
-        .map(Some)
-        .map_err(ApiError::from)
+    Some(payload)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_frame, SseParser};
-    use crate::types::{ContentBlockDelta, MessageDelta, OutputContentBlock, StreamEvent, Usage};
+    use super::{extract_data_payload, SseParser};
+    use crate::types::{ContentBlockDelta, StreamEvent};
 
     #[test]
-    fn parses_single_frame() {
-        let frame = concat!(
-            "event: content_block_start\n",
-            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"Hi\"}}\n\n"
-        );
-
-        let event = parse_frame(frame).expect("frame should parse");
-        assert_eq!(
-            event,
-            Some(StreamEvent::ContentBlockStart(
-                crate::types::ContentBlockStartEvent {
-                    index: 0,
-                    content_block: OutputContentBlock::Text {
-                        text: "Hi".to_string(),
-                    },
-                },
-            ))
-        );
+    fn extracts_data_payload() {
+        let frame = "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{\"content\":\"Hi\"},\"finish_reason\":null}]}";
+        let payload = extract_data_payload(frame);
+        assert!(payload.is_some());
+        assert!(payload.unwrap().contains("chatcmpl-1"));
     }
 
     #[test]
-    fn parses_chunked_stream() {
+    fn ignores_done_marker() {
+        assert_eq!(extract_data_payload("data: [DONE]"), None);
+    }
+
+    #[test]
+    fn ignores_ping() {
+        assert_eq!(extract_data_payload("event: ping\ndata: {}"), None);
+    }
+
+    #[test]
+    fn parses_chunked_openai_stream() {
         let mut parser = SseParser::new();
-        let first = b"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hel";
-        let second = b"lo\"}}\n\n";
+        // First chunk: role assignment + text start
+        let first = br#"data: {"id":"c1","model":"m","choices":[{"delta":{"role":"assistant","content":"Hel"},"finish_reason":null}]}"#;
+        let first_with_sep = [&first[..], b"\n\n"].concat();
 
-        assert!(parser
-            .push(first)
-            .expect("first chunk should buffer")
-            .is_empty());
-        let events = parser.push(second).expect("second chunk should parse");
+        let events = parser.push(&first_with_sep).expect("first chunk");
+        // Should get MessageStart + ContentBlockStart + ContentBlockDelta
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::MessageStart(_))));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ContentBlockStart(_))));
 
-        assert_eq!(
-            events,
-            vec![StreamEvent::ContentBlockDelta(
-                crate::types::ContentBlockDeltaEvent {
-                    index: 0,
-                    delta: ContentBlockDelta::TextDelta {
-                        text: "Hello".to_string(),
-                    },
-                }
-            )]
-        );
+        // Second chunk: more text
+        let second = b"data: {\"id\":\"c1\",\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"lo\"},\"finish_reason\":null}]}\n\n";
+        let events = parser.push(second).expect("second chunk");
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ContentBlockDelta(d) if matches!(&d.delta, ContentBlockDelta::TextDelta { text } if text == "lo"))));
+
+        // Finish chunk
+        let finish = b"data: {\"id\":\"c1\",\"model\":\"m\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}\n\n";
+        let events = parser.push(finish).expect("finish chunk");
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::MessageStop(_))));
     }
 
     #[test]
-    fn ignores_ping_and_done() {
+    fn handles_done_in_stream() {
         let mut parser = SseParser::new();
-        let payload = concat!(
-            ": keepalive\n",
-            "event: ping\n",
-            "data: {\"type\":\"ping\"}\n\n",
-            "event: message_delta\n",
-            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}\n\n",
-            "event: message_stop\n",
-            "data: {\"type\":\"message_stop\"}\n\n",
-            "data: [DONE]\n\n"
-        );
-
-        let events = parser
-            .push(payload.as_bytes())
-            .expect("parser should succeed");
-        assert_eq!(
-            events,
-            vec![
-                StreamEvent::MessageDelta(crate::types::MessageDeltaEvent {
-                    delta: MessageDelta {
-                        stop_reason: Some("tool_use".to_string()),
-                        stop_sequence: None,
-                    },
-                    usage: Usage {
-                        input_tokens: 1,
-                        cache_creation_input_tokens: 0,
-                        cache_read_input_tokens: 0,
-                        output_tokens: 2,
-                    },
-                }),
-                StreamEvent::MessageStop(crate::types::MessageStopEvent {}),
-            ]
-        );
-    }
-
-    #[test]
-    fn ignores_data_less_event_frames() {
-        let frame = "event: ping\n\n";
-        let event = parse_frame(frame).expect("frame without data should be ignored");
-        assert_eq!(event, None);
-    }
-
-    #[test]
-    fn parses_split_json_across_data_lines() {
-        let frame = concat!(
-            "event: content_block_delta\n",
-            "data: {\"type\":\"content_block_delta\",\"index\":0,\n",
-            "data: \"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n"
-        );
-
-        let event = parse_frame(frame).expect("frame should parse");
-        assert_eq!(
-            event,
-            Some(StreamEvent::ContentBlockDelta(
-                crate::types::ContentBlockDeltaEvent {
-                    index: 0,
-                    delta: ContentBlockDelta::TextDelta {
-                        text: "Hello".to_string(),
-                    },
-                }
-            ))
-        );
+        let payload = b"data: {\"id\":\"c1\",\"model\":\"m\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"c1\",\"model\":\"m\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n";
+        let events = parser.push(payload).expect("stream");
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::MessageStop(_))));
     }
 }
