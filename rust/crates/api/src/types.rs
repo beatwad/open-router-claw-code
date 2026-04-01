@@ -12,8 +12,6 @@ pub struct MessageRequest {
     pub tools: Option<Vec<ToolDefinition>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<ThinkingConfig>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stream: bool,
 }
@@ -23,23 +21,6 @@ impl MessageRequest {
     pub fn with_streaming(mut self) -> Self {
         self.stream = true;
         self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ThinkingConfig {
-    #[serde(rename = "type")]
-    pub kind: String,
-    pub budget_tokens: u32,
-}
-
-impl ThinkingConfig {
-    #[must_use]
-    pub fn enabled(budget_tokens: u32) -> Self {
-        Self {
-            kind: "enabled".to_string(),
-            budget_tokens,
-        }
     }
 }
 
@@ -83,9 +64,6 @@ pub enum InputContentBlock {
     Text {
         text: String,
     },
-    Image {
-        source: ImageSource,
-    },
     ToolUse {
         id: String,
         name: String,
@@ -97,14 +75,6 @@ pub enum InputContentBlock {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
     },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ImageSource {
-    #[serde(rename = "type")]
-    pub kind: String,
-    pub media_type: String,
-    pub data: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -159,11 +129,6 @@ impl MessageResponse {
 pub enum OutputContentBlock {
     Text {
         text: String,
-    },
-    Thinking {
-        thinking: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        signature: Option<String>,
     },
     ToolUse {
         id: String,
@@ -224,8 +189,6 @@ pub struct ContentBlockDeltaEvent {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlockDelta {
     TextDelta { text: String },
-    ThinkingDelta { thinking: String },
-    SignatureDelta { signature: String },
     InputJsonDelta { partial_json: String },
 }
 

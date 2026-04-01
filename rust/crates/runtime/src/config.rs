@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::json::JsonValue;
+use crate::sandbox::{FilesystemIsolationMode, SandboxConfig};
 
 pub const CLAUDE_CODE_SETTINGS_SCHEMA_NAME: &str = "SettingsSchema";
 
@@ -40,6 +41,7 @@ pub struct RuntimeFeatureConfig {
     oauth: Option<OAuthConfig>,
     model: Option<String>,
     permission_mode: Option<ResolvedPermissionMode>,
+    sandbox: SandboxConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -225,6 +227,7 @@ impl ConfigLoader {
             oauth: parse_optional_oauth_config(&merged_value, "merged settings.oauth")?,
             model: parse_optional_model(&merged_value),
             permission_mode: parse_optional_permission_mode(&merged_value)?,
+            sandbox: parse_optional_sandbox_config(&merged_value)?,
         };
 
         Ok(RuntimeConfig {
@@ -289,6 +292,11 @@ impl RuntimeConfig {
     pub fn permission_mode(&self) -> Option<ResolvedPermissionMode> {
         self.feature_config.permission_mode
     }
+
+    #[must_use]
+    pub fn sandbox(&self) -> &SandboxConfig {
+        &self.feature_config.sandbox
+    }
 }
 
 impl RuntimeFeatureConfig {
@@ -310,6 +318,11 @@ impl RuntimeFeatureConfig {
     #[must_use]
     pub fn permission_mode(&self) -> Option<ResolvedPermissionMode> {
         self.permission_mode
+    }
+
+    #[must_use]
+    pub fn sandbox(&self) -> &SandboxConfig {
+        &self.sandbox
     }
 }
 
@@ -441,6 +454,42 @@ fn parse_permission_mode_label(
         "dontAsk" | "danger-full-access" => Ok(ResolvedPermissionMode::DangerFullAccess),
         other => Err(ConfigError::Parse(format!(
             "{context}: unsupported permission mode {other}"
+        ))),
+    }
+}
+
+fn parse_optional_sandbox_config(root: &JsonValue) -> Result<SandboxConfig, ConfigError> {
+    let Some(object) = root.as_object() else {
+        return Ok(SandboxConfig::default());
+    };
+    let Some(sandbox_value) = object.get("sandbox") else {
+        return Ok(SandboxConfig::default());
+    };
+    let sandbox = expect_object(sandbox_value, "merged settings.sandbox")?;
+    let filesystem_mode = optional_string(sandbox, "filesystemMode", "merged settings.sandbox")?
+        .map(parse_filesystem_mode_label)
+        .transpose()?;
+    Ok(SandboxConfig {
+        enabled: optional_bool(sandbox, "enabled", "merged settings.sandbox")?,
+        namespace_restrictions: optional_bool(
+            sandbox,
+            "namespaceRestrictions",
+            "merged settings.sandbox",
+        )?,
+        network_isolation: optional_bool(sandbox, "networkIsolation", "merged settings.sandbox")?,
+        filesystem_mode,
+        allowed_mounts: optional_string_array(sandbox, "allowedMounts", "merged settings.sandbox")?
+            .unwrap_or_default(),
+    })
+}
+
+fn parse_filesystem_mode_label(value: &str) -> Result<FilesystemIsolationMode, ConfigError> {
+    match value {
+        "off" => Ok(FilesystemIsolationMode::Off),
+        "workspace-only" => Ok(FilesystemIsolationMode::WorkspaceOnly),
+        "allow-list" => Ok(FilesystemIsolationMode::AllowList),
+        other => Err(ConfigError::Parse(format!(
+            "merged settings.sandbox.filesystemMode: unsupported filesystem mode {other}"
         ))),
     }
 }
@@ -688,6 +737,7 @@ mod tests {
         CLAUDE_CODE_SETTINGS_SCHEMA_NAME,
     };
     use crate::json::JsonValue;
+    use crate::sandbox::FilesystemIsolationMode;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -788,6 +838,44 @@ mod tests {
             .contains_key("PostToolUse"));
         assert!(loaded.mcp().get("home").is_some());
         assert!(loaded.mcp().get("project").is_some());
+
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn parses_sandbox_config() {
+        let root = temp_dir();
+        let cwd = root.join("project");
+        let home = root.join("home").join(".claude");
+        fs::create_dir_all(cwd.join(".claude")).expect("project config dir");
+        fs::create_dir_all(&home).expect("home config dir");
+
+        fs::write(
+            cwd.join(".claude").join("settings.local.json"),
+            r#"{
+              "sandbox": {
+                "enabled": true,
+                "namespaceRestrictions": false,
+                "networkIsolation": true,
+                "filesystemMode": "allow-list",
+                "allowedMounts": ["logs", "tmp/cache"]
+              }
+            }"#,
+        )
+        .expect("write local settings");
+
+        let loaded = ConfigLoader::new(&cwd, &home)
+            .load()
+            .expect("config should load");
+
+        assert_eq!(loaded.sandbox().enabled, Some(true));
+        assert_eq!(loaded.sandbox().namespace_restrictions, Some(false));
+        assert_eq!(loaded.sandbox().network_isolation, Some(true));
+        assert_eq!(
+            loaded.sandbox().filesystem_mode,
+            Some(FilesystemIsolationMode::AllowList)
+        );
+        assert_eq!(loaded.sandbox().allowed_mounts, vec!["logs", "tmp/cache"]);
 
         fs::remove_dir_all(root).expect("cleanup temp dir");
     }

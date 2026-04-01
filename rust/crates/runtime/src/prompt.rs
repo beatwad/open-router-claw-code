@@ -50,8 +50,8 @@ pub struct ProjectContext {
     pub cwd: PathBuf,
     pub current_date: String,
     pub git_status: Option<String>,
+    pub git_diff: Option<String>,
     pub instruction_files: Vec<ContextFile>,
-    pub memory_files: Vec<ContextFile>,
 }
 
 impl ProjectContext {
@@ -61,13 +61,12 @@ impl ProjectContext {
     ) -> std::io::Result<Self> {
         let cwd = cwd.into();
         let instruction_files = discover_instruction_files(&cwd)?;
-        let memory_files = discover_memory_files(&cwd)?;
         Ok(Self {
             cwd,
             current_date: current_date.into(),
             git_status: None,
+            git_diff: None,
             instruction_files,
-            memory_files,
         })
     }
 
@@ -77,6 +76,7 @@ impl ProjectContext {
     ) -> std::io::Result<Self> {
         let mut context = Self::discover(cwd, current_date)?;
         context.git_status = read_git_status(&context.cwd);
+        context.git_diff = read_git_diff(&context.cwd);
         Ok(context)
     }
 }
@@ -147,9 +147,6 @@ impl SystemPromptBuilder {
             if !project_context.instruction_files.is_empty() {
                 sections.push(render_instruction_files(&project_context.instruction_files));
             }
-            if !project_context.memory_files.is_empty() {
-                sections.push(render_memory_files(&project_context.memory_files));
-            }
         }
         if let Some(config) = &self.config {
             sections.push(render_config_section(config));
@@ -192,7 +189,7 @@ pub fn prepend_bullets(items: Vec<String>) -> Vec<String> {
     items.into_iter().map(|item| format!(" - {item}")).collect()
 }
 
-fn discover_context_directories(cwd: &Path) -> Vec<PathBuf> {
+fn discover_instruction_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
     let mut directories = Vec::new();
     let mut cursor = Some(cwd);
     while let Some(dir) = cursor {
@@ -200,11 +197,6 @@ fn discover_context_directories(cwd: &Path) -> Vec<PathBuf> {
         cursor = dir.parent();
     }
     directories.reverse();
-    directories
-}
-
-fn discover_instruction_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
-    let directories = discover_context_directories(cwd);
 
     let mut files = Vec::new();
     for dir in directories {
@@ -215,26 +207,6 @@ fn discover_instruction_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
             dir.join(".claude").join("instructions.md"),
         ] {
             push_context_file(&mut files, candidate)?;
-        }
-    }
-    Ok(dedupe_instruction_files(files))
-}
-
-fn discover_memory_files(cwd: &Path) -> std::io::Result<Vec<ContextFile>> {
-    let mut files = Vec::new();
-    for dir in discover_context_directories(cwd) {
-        let memory_dir = dir.join(".claude").join("memory");
-        let Ok(entries) = fs::read_dir(&memory_dir) else {
-            continue;
-        };
-        let mut paths = entries
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.is_file())
-            .collect::<Vec<_>>();
-        paths.sort();
-        for path in paths {
-            push_context_file(&mut files, path)?;
         }
     }
     Ok(dedupe_instruction_files(files))
@@ -270,6 +242,38 @@ fn read_git_status(cwd: &Path) -> Option<String> {
     }
 }
 
+fn read_git_diff(cwd: &Path) -> Option<String> {
+    let mut sections = Vec::new();
+
+    let staged = read_git_output(cwd, &["diff", "--cached"])?;
+    if !staged.trim().is_empty() {
+        sections.push(format!("Staged changes:\n{}", staged.trim_end()));
+    }
+
+    let unstaged = read_git_output(cwd, &["diff"])?;
+    if !unstaged.trim().is_empty() {
+        sections.push(format!("Unstaged changes:\n{}", unstaged.trim_end()));
+    }
+
+    if sections.is_empty() {
+        None
+    } else {
+        Some(sections.join("\n\n"))
+    }
+}
+
+fn read_git_output(cwd: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
 fn render_project_context(project_context: &ProjectContext) -> String {
     let mut lines = vec!["# Project context".to_string()];
     let mut bullets = vec![
@@ -282,31 +286,22 @@ fn render_project_context(project_context: &ProjectContext) -> String {
             project_context.instruction_files.len()
         ));
     }
-    if !project_context.memory_files.is_empty() {
-        bullets.push(format!(
-            "Project memory files discovered: {}.",
-            project_context.memory_files.len()
-        ));
-    }
     lines.extend(prepend_bullets(bullets));
     if let Some(status) = &project_context.git_status {
         lines.push(String::new());
         lines.push("Git status snapshot:".to_string());
         lines.push(status.clone());
     }
+    if let Some(diff) = &project_context.git_diff {
+        lines.push(String::new());
+        lines.push("Git diff snapshot:".to_string());
+        lines.push(diff.clone());
+    }
     lines.join("\n")
 }
 
 fn render_instruction_files(files: &[ContextFile]) -> String {
-    render_context_file_section("# Claude instructions", files)
-}
-
-fn render_memory_files(files: &[ContextFile]) -> String {
-    render_context_file_section("# Project memory", files)
-}
-
-fn render_context_file_section(title: &str, files: &[ContextFile]) -> String {
-    let mut sections = vec![title.to_string()];
+    let mut sections = vec!["# Claude instructions".to_string()];
     let mut remaining_chars = MAX_TOTAL_INSTRUCTION_CHARS;
     for file in files {
         if remaining_chars == 0 {
@@ -498,9 +493,8 @@ fn get_actions_section() -> String {
 mod tests {
     use super::{
         collapse_blank_lines, display_context_path, normalize_instruction_content,
-        render_instruction_content, render_instruction_files, render_memory_files,
-        truncate_instruction_content, ContextFile, ProjectContext, SystemPromptBuilder,
-        SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+        render_instruction_content, render_instruction_files, truncate_instruction_content,
+        ContextFile, ProjectContext, SystemPromptBuilder, SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
     };
     use crate::config::ConfigLoader;
     use std::fs;
@@ -566,35 +560,6 @@ mod tests {
     }
 
     #[test]
-    fn discovers_project_memory_files_from_ancestor_chain() {
-        let root = temp_dir();
-        let nested = root.join("apps").join("api");
-        fs::create_dir_all(root.join(".claude").join("memory")).expect("root memory dir");
-        fs::create_dir_all(nested.join(".claude").join("memory")).expect("nested memory dir");
-        fs::write(
-            root.join(".claude").join("memory").join("2026-03-30.md"),
-            "root memory",
-        )
-        .expect("write root memory");
-        fs::write(
-            nested.join(".claude").join("memory").join("2026-03-31.md"),
-            "nested memory",
-        )
-        .expect("write nested memory");
-
-        let context = ProjectContext::discover(&nested, "2026-03-31").expect("context should load");
-        let contents = context
-            .memory_files
-            .iter()
-            .map(|file| file.content.as_str())
-            .collect::<Vec<_>>();
-
-        assert_eq!(contents, vec!["root memory", "nested memory"]);
-        assert!(render_memory_files(&context.memory_files).contains("# Project memory"));
-        fs::remove_dir_all(root).expect("cleanup temp dir");
-    }
-
-    #[test]
     fn dedupes_identical_instruction_content_across_scopes() {
         let root = temp_dir();
         let nested = root.join("apps").join("api");
@@ -652,6 +617,49 @@ mod tests {
         assert!(status.contains("## No commits yet on") || status.contains("## "));
         assert!(status.contains("?? CLAUDE.md"));
         assert!(status.contains("?? tracked.txt"));
+        assert!(context.git_diff.is_none());
+
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn discover_with_git_includes_diff_snapshot_for_tracked_changes() {
+        let root = temp_dir();
+        fs::create_dir_all(&root).expect("root dir");
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&root)
+            .status()
+            .expect("git init should run");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "tests@example.com"])
+            .current_dir(&root)
+            .status()
+            .expect("git config email should run");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Runtime Prompt Tests"])
+            .current_dir(&root)
+            .status()
+            .expect("git config name should run");
+        fs::write(root.join("tracked.txt"), "hello\n").expect("write tracked file");
+        std::process::Command::new("git")
+            .args(["add", "tracked.txt"])
+            .current_dir(&root)
+            .status()
+            .expect("git add should run");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init", "--quiet"])
+            .current_dir(&root)
+            .status()
+            .expect("git commit should run");
+        fs::write(root.join("tracked.txt"), "hello\nworld\n").expect("rewrite tracked file");
+
+        let context =
+            ProjectContext::discover_with_git(&root, "2026-03-31").expect("context should load");
+
+        let diff = context.git_diff.expect("git diff should be present");
+        assert!(diff.contains("Unstaged changes:"));
+        assert!(diff.contains("tracked.txt"));
 
         fs::remove_dir_all(root).expect("cleanup temp dir");
     }

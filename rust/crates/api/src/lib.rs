@@ -11,7 +11,7 @@ pub use error::ApiError;
 pub use sse::{parse_frame, SseParser};
 pub use types::{
     ContentBlockDelta, ContentBlockDeltaEvent, ContentBlockStartEvent, ContentBlockStopEvent,
-    ImageSource, InputContentBlock, InputMessage, MessageDelta, MessageDeltaEvent, MessageRequest,
+    InputContentBlock, InputMessage, MessageDelta, MessageDeltaEvent, MessageRequest,
     MessageResponse, MessageStartEvent, MessageStopEvent, OutputContentBlock, StreamEvent,
-    ThinkingConfig, ToolChoice, ToolDefinition, ToolResultContentBlock, Usage,
+    ToolChoice, ToolDefinition, ToolResultContentBlock, Usage,
 };

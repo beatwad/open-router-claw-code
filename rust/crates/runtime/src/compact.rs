@@ -1,6 +1,3 @@
-use std::fs;
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use crate::session::{ContentBlock, ConversationMessage, MessageRole, Session};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,7 +90,6 @@ pub fn compact_session(session: &Session, config: CompactionConfig) -> Compactio
     let preserved = session.messages[keep_from..].to_vec();
     let summary = summarize_messages(removed);
     let formatted_summary = format_compact_summary(&summary);
-    persist_compact_summary(&formatted_summary);
     let continuation = get_compact_continuation_message(&summary, true, !preserved.is_empty());
 
     let mut compacted_messages = vec![ConversationMessage {
@@ -109,39 +105,9 @@ pub fn compact_session(session: &Session, config: CompactionConfig) -> Compactio
         compacted_session: Session {
             version: session.version,
             messages: compacted_messages,
-            metadata: session.metadata.clone(),
         },
         removed_message_count: removed.len(),
     }
-}
-
-fn persist_compact_summary(formatted_summary: &str) {
-    if formatted_summary.trim().is_empty() {
-        return;
-    }
-
-    let Ok(cwd) = std::env::current_dir() else {
-        return;
-    };
-    let memory_dir = cwd.join(".claude").join("memory");
-    if fs::create_dir_all(&memory_dir).is_err() {
-        return;
-    }
-
-    let path = memory_dir.join(compact_summary_filename());
-    let _ = fs::write(path, render_memory_file(formatted_summary));
-}
-
-fn compact_summary_filename() -> String {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    format!("summary-{timestamp}.md")
-}
-
-fn render_memory_file(formatted_summary: &str) -> String {
-    format!("# Project memory\n\n{}\n", formatted_summary.trim())
 }
 
 fn summarize_messages(messages: &[ConversationMessage]) -> String {
@@ -164,7 +130,7 @@ fn summarize_messages(messages: &[ConversationMessage]) -> String {
         .filter_map(|block| match block {
             ContentBlock::ToolUse { name, .. } => Some(name.as_str()),
             ContentBlock::ToolResult { tool_name, .. } => Some(tool_name.as_str()),
-            ContentBlock::Text { .. } | ContentBlock::Thinking { .. } => None,
+            ContentBlock::Text { .. } => None,
         })
         .collect::<Vec<_>>();
     tool_names.sort_unstable();
@@ -234,7 +200,6 @@ fn summarize_messages(messages: &[ConversationMessage]) -> String {
 fn summarize_block(block: &ContentBlock) -> String {
     let raw = match block {
         ContentBlock::Text { text } => text.clone(),
-        ContentBlock::Thinking { text, .. } => format!("thinking: {text}"),
         ContentBlock::ToolUse { name, input, .. } => format!("tool_use {name}({input})"),
         ContentBlock::ToolResult {
             tool_name,
@@ -293,7 +258,7 @@ fn collect_key_files(messages: &[ConversationMessage]) -> Vec<String> {
         .iter()
         .flat_map(|message| message.blocks.iter())
         .map(|block| match block {
-            ContentBlock::Text { text } | ContentBlock::Thinking { text, .. } => text.as_str(),
+            ContentBlock::Text { text } => text.as_str(),
             ContentBlock::ToolUse { input, .. } => input.as_str(),
             ContentBlock::ToolResult { output, .. } => output.as_str(),
         })
@@ -315,15 +280,10 @@ fn infer_current_work(messages: &[ConversationMessage]) -> Option<String> {
 
 fn first_text_block(message: &ConversationMessage) -> Option<&str> {
     message.blocks.iter().find_map(|block| match block {
-        ContentBlock::Text { text } | ContentBlock::Thinking { text, .. }
-            if !text.trim().is_empty() =>
-        {
-            Some(text.as_str())
-        }
+        ContentBlock::Text { text } if !text.trim().is_empty() => Some(text.as_str()),
         ContentBlock::ToolUse { .. }
         | ContentBlock::ToolResult { .. }
-        | ContentBlock::Text { .. }
-        | ContentBlock::Thinking { .. } => None,
+        | ContentBlock::Text { .. } => None,
     })
 }
 
@@ -368,7 +328,7 @@ fn estimate_message_tokens(message: &ConversationMessage) -> usize {
         .blocks
         .iter()
         .map(|block| match block {
-            ContentBlock::Text { text } | ContentBlock::Thinking { text, .. } => text.len() / 4 + 1,
+            ContentBlock::Text { text } => text.len() / 4 + 1,
             ContentBlock::ToolUse { name, input, .. } => (name.len() + input.len()) / 4 + 1,
             ContentBlock::ToolResult {
                 tool_name, output, ..
@@ -418,21 +378,14 @@ fn collapse_blank_lines(content: &str) -> String {
 mod tests {
     use super::{
         collect_key_files, compact_session, estimate_session_tokens, format_compact_summary,
-        infer_pending_work, render_memory_file, should_compact, CompactionConfig,
+        infer_pending_work, should_compact, CompactionConfig,
     };
-    use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
     use crate::session::{ContentBlock, ConversationMessage, MessageRole, Session};
 
     #[test]
     fn formats_compact_summary_like_upstream() {
         let summary = "<analysis>scratch</analysis>\n<summary>Kept work</summary>";
         assert_eq!(format_compact_summary(summary), "Summary:\nKept work");
-        assert_eq!(
-            render_memory_file("Summary:\nKept work"),
-            "# Project memory\n\nSummary:\nKept work\n"
-        );
     }
 
     #[test]
@@ -440,7 +393,6 @@ mod tests {
         let session = Session {
             version: 1,
             messages: vec![ConversationMessage::user_text("hello")],
-            metadata: None,
         };
 
         let result = compact_session(&session, CompactionConfig::default());
@@ -448,63 +400,6 @@ mod tests {
         assert_eq!(result.compacted_session, session);
         assert!(result.summary.is_empty());
         assert!(result.formatted_summary.is_empty());
-    }
-
-    #[test]
-    fn persists_compacted_summaries_under_dot_claude_memory() {
-        let _guard = crate::test_env_lock();
-        let temp = std::env::temp_dir().join(format!(
-            "runtime-compact-memory-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time after epoch")
-                .as_nanos()
-        ));
-        fs::create_dir_all(&temp).expect("temp dir");
-        let previous = std::env::current_dir().expect("cwd");
-        std::env::set_current_dir(&temp).expect("set cwd");
-
-        let session = Session {
-            version: 1,
-            messages: vec![
-                ConversationMessage::user_text("one ".repeat(200)),
-                ConversationMessage::assistant(vec![ContentBlock::Text {
-                    text: "two ".repeat(200),
-                }]),
-                ConversationMessage::tool_result("1", "bash", "ok ".repeat(200), false),
-                ConversationMessage {
-                    role: MessageRole::Assistant,
-                    blocks: vec![ContentBlock::Text {
-                        text: "recent".to_string(),
-                    }],
-                    usage: None,
-                },
-            ],
-        };
-
-        let result = compact_session(
-            &session,
-            CompactionConfig {
-                preserve_recent_messages: 2,
-                max_estimated_tokens: 1,
-            },
-        );
-        let memory_dir = temp.join(".claude").join("memory");
-        let files = fs::read_dir(&memory_dir)
-            .expect("memory dir exists")
-            .flatten()
-            .map(|entry| entry.path())
-            .collect::<Vec<_>>();
-
-        assert_eq!(result.removed_message_count, 2);
-        assert_eq!(files.len(), 1);
-        let persisted = fs::read_to_string(&files[0]).expect("memory file readable");
-
-        std::env::set_current_dir(previous).expect("restore cwd");
-        fs::remove_dir_all(temp).expect("cleanup temp dir");
-
-        assert!(persisted.contains("# Project memory"));
-        assert!(persisted.contains("Summary:"));
     }
 
     #[test]
@@ -525,7 +420,6 @@ mod tests {
                     usage: None,
                 },
             ],
-            metadata: None,
         };
 
         let result = compact_session(

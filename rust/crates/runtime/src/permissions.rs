@@ -5,6 +5,8 @@ pub enum PermissionMode {
     ReadOnly,
     WorkspaceWrite,
     DangerFullAccess,
+    Prompt,
+    Allow,
 }
 
 impl PermissionMode {
@@ -14,6 +16,8 @@ impl PermissionMode {
             Self::ReadOnly => "read-only",
             Self::WorkspaceWrite => "workspace-write",
             Self::DangerFullAccess => "danger-full-access",
+            Self::Prompt => "prompt",
+            Self::Allow => "allow",
         }
     }
 }
@@ -90,7 +94,7 @@ impl PermissionPolicy {
     ) -> PermissionOutcome {
         let current_mode = self.active_mode();
         let required_mode = self.required_mode_for(tool_name);
-        if current_mode >= required_mode {
+        if current_mode == PermissionMode::Allow || current_mode >= required_mode {
             return PermissionOutcome::Allow;
         }
 
@@ -101,8 +105,9 @@ impl PermissionPolicy {
             required_mode,
         };
 
-        if current_mode == PermissionMode::WorkspaceWrite
-            && required_mode == PermissionMode::DangerFullAccess
+        if current_mode == PermissionMode::Prompt
+            || (current_mode == PermissionMode::WorkspaceWrite
+                && required_mode == PermissionMode::DangerFullAccess)
         {
             return match prompter.as_mut() {
                 Some(prompter) => match prompter.decide(&request) {
