@@ -8,10 +8,6 @@
   <strong>Better Harness Tools, now working with any model from OpenRouter instead of Anthropic models only.</strong>
 </p>
 
-<p align="center">
-  <a href="https://github.com/sponsors/instructkr"><img src="https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink?logo=github&style=for-the-badge" alt="Sponsor on GitHub" /></a>
-</p>
-
 ## Overview
 This is a fork of the project [https://github.com/instructkr/claw-code/](https://github.com/instructkr/claw-code/).
 
